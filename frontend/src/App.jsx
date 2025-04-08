@@ -8,7 +8,8 @@ import VideoList from './components/VideoList';
 import './App.css';
 import 'video.js/dist/video-js.css';
 
-const API_BASE_URL = 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+
 
 function App() {
   return (
