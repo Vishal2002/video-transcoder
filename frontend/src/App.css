@@ -1,0 +1,50 @@
+/* src/App.css */
+.App {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+h1 {
+  color: #fff;
+  margin-bottom: 30px;
+  text-align: center;
+}
+
+h2 {
+  color: #444;
+  margin-bottom: 20px;
+}
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+.video-list-container {
+  margin-top: 20px;
+}
+
+.error-message {
+  color: #e53935;
+  background-color: #ffebee;
+  padding: 10px 15px;
+  border-radius: 4px;
+  margin: 10px 0;
+}
+
+.video-details {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.video-info {
+  background-color: #f5f5f5;
+  padding: 15px;
+  border-radius: 8px;
+}
+
+/* src/components/VideoUpload.css */
