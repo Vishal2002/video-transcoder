@@ -5,6 +5,7 @@ const cors = require('cors');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const fs = require('fs');
 const axios = require('axios');
+const { Upload } = require('@aws-sdk/lib-storage');
 require('dotenv').config();
 
 const app = express();
@@ -38,16 +39,22 @@ const r2Client = new S3Client({
 
 // Upload to R2
 async function uploadToR2(filePath, fileName) {
-  const fileContent = fs.readFileSync(filePath);
+  const fileStream = fs.createReadStream(filePath);
   
-  const command = new PutObjectCommand({
-    Bucket: process.env.R2_BUCKET_NAME,
-    Key: fileName,
-    Body: fileContent,
-    ContentType: 'video/mp4',
+  const parallelUploads = new Upload({
+    client: r2Client,
+    params: {
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: fileName,
+      Body: fileStream,
+      ContentType: 'video/mp4',
+      ACL: 'public-read'
+    },
+    queueSize: 4, // number of concurrent uploads
+    partSize: 5 * 1024 * 1024, // part size in bytes (5MB)
   });
 
-  return r2Client.send(command);
+  return parallelUploads.done();
 }
 
 
@@ -66,6 +73,7 @@ app.post('/upload', upload.single('video'), async (req, res) => {
       
       // 2. Get the R2 URL for the uploaded file
       const r2Url = `https://${process.env.R2_PUBLIC_DOMAIN}/${req.file.filename}`;
+      console.log('R2 URL:', r2Url);
       
       // 3. Tell Cloudflare Stream to copy from R2 instead of uploading directly
       // This approach is more reliable for large files
