@@ -2,10 +2,9 @@
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const fs = require('fs');
 const axios = require('axios');
-const { Upload } = require('@aws-sdk/lib-storage');
+const FormData = require('form-data');
 require('dotenv').config();
 
 const app = express();
@@ -27,127 +26,206 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Configure R2 client
-const r2Client = new S3Client({
-  region: 'auto',
-  endpoint: `https://${process.env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-  },
-});
+// Environment variables for Bunny.net
+const BUNNY_STORAGE_NAME = process.env.BUNNY_STORAGE_NAME;
+const BUNNY_STORAGE_ZONE = process.env.BUNNY_STORAGE_ZONE;
+const BUNNY_STREAM_LIBRARY_ID = process.env.BUNNY_STREAM_LIBRARY_ID;
+const BUNNY_STREAM_API_KEY = process.env.BUNNY_STREAM_API_KEY;
+const BUNNY_STORAGE_API_KEY = process.env.BUNNY_STORAGE_API_KEY;
 
-// Upload to R2
-async function uploadToR2(filePath, fileName) {
-  const fileStream = fs.createReadStream(filePath);
-  
-  const parallelUploads = new Upload({
-    client: r2Client,
-    params: {
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: fileName,
-      Body: fileStream,
-      ContentType: 'video/mp4',
-      ACL: 'public-read'
-    },
-    queueSize: 4, // number of concurrent uploads
-    partSize: 5 * 1024 * 1024, // part size in bytes (5MB)
-  });
 
-  return parallelUploads.done();
+async function uploadToBunnyStorage(filePath, fileName) {
+  try {
+    console.log(`Uploading ${fileName} to Bunny Storage...`);
+    
+    const fileStream = fs.createReadStream(filePath);
+    
+    // The correct format for Bunny Storage API
+    const url = `https://${BUNNY_STORAGE_ZONE}.storage.bunnycdn.com/${BUNNY_STORAGE_NAME}/${fileName}`;
+    console.log('Storage upload URL:', url);
+    
+    const response = await axios.put(
+      url,
+      fileStream,
+      {
+        headers: {
+          // For Bunny Storage, we use the Storage API key
+          'AccessKey': BUNNY_STORAGE_API_KEY,
+          'Content-Type': 'application/octet-stream'
+        }
+      }
+    );
+    
+    console.log('Upload to Bunny Storage successful');
+    return `https://${BUNNY_STORAGE_ZONE}.storage.bunnycdn.com/${BUNNY_STORAGE_NAME}/${fileName}`;
+  } catch (error) {
+    console.error('Error uploading to Bunny Storage:', error.response ? error.response.data : error);
+    throw error;
+  }
 }
 
-
-// Routes
-app.post('/upload', upload.single('video'), async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ success: false, message: 'No file uploaded' });
+// Create a Bunny Stream video
+async function createBunnyStreamVideo(title) {
+  try {
+    console.log('Creating Bunny Stream video entry...');
+    
+    const response = await axios.post(
+      `https://video.bunnycdn.com/library/${BUNNY_STREAM_LIBRARY_ID}/videos`,
+      { title },
+      {
+        headers: {
+          'AccessKey': BUNNY_STREAM_API_KEY,
+          'Content-Type': 'application/json'
+        }
       }
+    );
+    
+    console.log('Created Bunny Stream video entry');
+    return response.data;
+  } catch (error) {
+    console.error('Error creating Bunny Stream video:', error.response ? error.response.data : error);
+    throw error;
+  }
+}
+
+// Upload directly to Bunny Stream
+async function uploadToBunnyStream(filePath, videoId) {
+  try {
+    console.log(`Uploading video to Bunny Stream with ID: ${videoId}...`);
+    
+    const fileStream = fs.createReadStream(filePath);
+    
+    const response = await axios.put(
+      `https://video.bunnycdn.com/library/${BUNNY_STREAM_LIBRARY_ID}/videos/${videoId}`,
+      fileStream,
+      {
+        headers: {
+          'AccessKey': BUNNY_STREAM_API_KEY,
+          'Content-Type': 'application/octet-stream'
+        }
+      }
+    );
+    
+    console.log('Upload to Bunny Stream successful');
+    return response.data;
+  } catch (error) {
+    console.error('Error uploading to Bunny Stream:', error.response ? error.response.data : error);
+    throw error;
+  }
+}
+
+// Import from URL to Bunny Stream
+async function importToBunnyStream(sourceUrl, videoId) {
+  try {
+    console.log(`Importing video from URL to Bunny Stream...`);
+    console.log('Source URL:', sourceUrl);
+    console.log('Video ID:', videoId);
+    
+    const response = await axios.post(
+      `https://video.bunnycdn.com/library/${BUNNY_STREAM_LIBRARY_ID}/videos/${videoId}/import`,
+      { url: sourceUrl },
+      {
+        headers: {
+          'AccessKey': BUNNY_STREAM_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    console.log('Import to Bunny Stream initiated');
+    return response.data;
+  } catch (error) {
+    console.error('Error importing to Bunny Stream:', error.response ? error.response.data : error);
+    throw error;
+  }
+}
+
+// Alternate approach: Skip storage and upload directly to Stream
+app.post('/upload', upload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    
+    console.log('File received:', req.file.path, 'Size:', req.file.size);
+    
+    // Option 1: Use Storage + Stream approach
+    try {
+      // 1. Create a video entry in Bunny Stream
+      const videoData = await createBunnyStreamVideo(req.file.originalname);
+      console.log('Video entry created with ID:', videoData.guid);
       
-      console.log('File received:', req.file.path, 'Size:', req.file.size);
-      
-      // 1. Upload to R2 for backup/archive
-      await uploadToR2(req.file.path, req.file.filename);
-      console.log('Uploaded to R2 successfully');
-      
-      // 2. Get the R2 URL for the uploaded file
-      const r2Url = `https://${process.env.R2_PUBLIC_DOMAIN}/${req.file.filename}`;
-      console.log('R2 URL:', r2Url);
-      
-      // 3. Tell Cloudflare Stream to copy from R2 instead of uploading directly
-      // This approach is more reliable for large files
-      const videoData = await copyFromR2ToStream(r2Url, req.file.originalname);
-      console.log('Stream transcoding initiated successfully');
+      // Try direct upload to Stream first as it's simpler
+      await uploadToBunnyStream(req.file.path, videoData.guid);
       
       // Delete local file
       fs.unlinkSync(req.file.path);
       
       res.json({
         success: true,
-        message: 'Video uploaded and processing',
-        videoId: videoData.uid,
+        message: 'Video uploaded directly to Stream',
+        videoId: videoData.guid,
         videoData
       });
-    } catch (error) {
-      console.error('Error in upload process:', error);
+    } catch (directUploadError) {
+      console.error('Direct upload to Stream failed, trying Storage approach:', directUploadError);
       
-      // Clean up the file if it exists
+      // Option 2: Storage + Stream approach as fallback
       try {
-        if (req.file && fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
-      } catch (cleanupError) {
-        console.error('Error cleaning up file:', cleanupError);
+        // 1. Create a video entry in Bunny Stream
+        const videoData = await createBunnyStreamVideo(req.file.originalname);
+        console.log('Video entry created with ID:', videoData.guid);
+        
+        // 2. Upload to Bunny Storage for backup/archive
+        const storageUrl = await uploadToBunnyStorage(req.file.path, req.file.filename);
+        console.log('Storage URL:', storageUrl);
+        
+        // 3. Import from Bunny Storage URL to Bunny Stream
+        await importToBunnyStream(storageUrl, videoData.guid);
+        console.log('Import from Storage to Stream initiated');
+        
+        // Delete local file
+        fs.unlinkSync(req.file.path);
+        
+        res.json({
+          success: true,
+          message: 'Video uploaded via Storage and now processing',
+          videoId: videoData.guid,
+          videoData
+        });
+      } catch (error) {
+        throw error; // Pass to outer catch block
       }
-      
-      res.status(500).json({ success: false, message: 'Upload failed', error: error.message });
     }
-  });
-  
-  // Function to copy from R2 to Stream
-  async function copyFromR2ToStream(sourceUrl, videoName) {
+  } catch (error) {
+    console.error('Error in upload process:', error);
+    
+    // Clean up the file if it exists
     try {
-      console.log('Initiating copy from R2 to Stream...');
-      
-      const response = await axios.post(
-        `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream/copy`,
-        {
-          url: sourceUrl,
-          meta: {
-            name: videoName
-          },
-          requireSignedURLs: false // Set to true for better security if needed
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-            'Content-Type': 'application/json',
-          }
-        }
-      );
-      
-      console.log('Copy to Stream initiated successfully');
-      return response.data.result;
-    } catch (error) {
-      console.error('Error copying to Stream:', error.response ? error.response.data : error);
-      throw error;
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+    } catch (cleanupError) {
+      console.error('Error cleaning up file:', cleanupError);
     }
+    
+    res.status(500).json({ success: false, message: 'Upload failed', error: error.message });
   }
+});
+
 // Get video info
 app.get('/video/:videoId', async (req, res) => {
   try {
     const response = await axios.get(
-      `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream/${req.params.videoId}`,
+      `https://video.bunnycdn.com/library/${BUNNY_STREAM_LIBRARY_ID}/videos/${req.params.videoId}`,
       {
         headers: {
-          'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
+          'AccessKey': BUNNY_STREAM_API_KEY
+        }
       }
     );
     
-    res.json({ success: true, video: response.data.result });
+    res.json({ success: true, video: response.data });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to get video info', error: error.message });
   }
@@ -157,16 +235,15 @@ app.get('/video/:videoId', async (req, res) => {
 app.get('/videos', async (req, res) => {
   try {
     const response = await axios.get(
-      `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/stream`,
+      `https://video.bunnycdn.com/library/${BUNNY_STREAM_LIBRARY_ID}/videos`,
       {
         headers: {
-          'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
+          'AccessKey': BUNNY_STREAM_API_KEY
+        }
       }
     );
     
-    res.json({ success: true, videos: response.data.result });
+    res.json({ success: true, videos: response.data.items });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to get videos', error: error.message });
   }
